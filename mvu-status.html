@@ -7248,12 +7248,15 @@
         "莉迪亚":"https://free-img.400040.xyz/4/2026/05/29/6a19438ce344b.png",
         "艾米莉":"https://free-img.400040.xyz/4/2026/05/29/6a194399a4a98.png",
         "巴蒂斯特":"https://free-img.400040.xyz/4/2026/05/29/6a19437aba7dc.png",
-        "约修亚·布莱恩":"https://i.111666.best/image/F6g043l1npdjH7Er9PI4ET.jpg",
+        "约修亚·布莱恩":"https://free-img.400040.xyz/4/2026/05/29/6a197f6ba4bac.png",
         "朱尔斯":"https://free-img.400040.xyz/4/2026/05/29/6a19438dc9a4d.png"
     };
     function getNpcPortrait(name) { return _charPortraits[name] || ""; }
 
     let _lastRenderedHash = '';
+    let _activeTab = 'basic';        // 当前可见 Tab
+    const _dirtyTabs = new Set();    // 切换时需要补渲染的 Tab 集合
+    let _lastStatData = null;        // 最近一次收到的完整数据（供懒渲染补偿使用）
     function quickHash(data) {
         // 轻量摘要：只取顶层 key 数量 + 嵌套层数 — 快速跳过无变化数据
         if (!data || typeof data !== 'object') return String(data);
@@ -7327,6 +7330,13 @@
             const target = document.getElementById(tabId);
             if (target) {
                 target.classList.add('active');
+            }
+
+            // ★ 懒渲染：切换后如果该 Tab 有待更新数据，立即补渲染
+            _activeTab = tabId;
+            if (_dirtyTabs.has(tabId) && _lastStatData) {
+                _dirtyTabs.delete(tabId);
+                renderUI(_lastStatData);
             }
 
         });
@@ -7702,94 +7712,314 @@
         },
     };
 
+    // ===== 懒渲染辅助：Tab → 模块映射 =====
+    // （仅注释用，实际判断内联在各 safe() 守卫里）
+
+    // ===== CRAFT_RECIPES：配方数据（从 safe('制造系统') 内部提升，避免每次渲染重建 ~170 行数据） =====
+    const CRAFT_RECIPES = [
+        // ═══ 阶段1 · 基础生存 ═══
+        { id: 'purified_water', name: '净化水', cat: '食物与水', icon: '💧',
+          cost: { pool: { '食物与水': 3, '燃料能源': 1 } },
+          output: { name: '净化水', quality: '普通', weight: 0.5, category: '食物与水', quantity: 3 },
+          building: null, skill: null, baseRate: 0.9, tech: 'survival_basics' },
+        { id: 'dried_food', name: '压缩干粮', cat: '食物与水', icon: '🥫',
+          cost: { pool: { '食物与水': 5 } },
+          output: { name: '压缩干粮', quality: '普通', weight: 0.8, category: '食物与水', quantity: 2 },
+          building: null, skill: null, baseRate: 0.85, tech: 'survival_basics' },
+        { id: 'bandage', name: '简易绷带', cat: '医疗药品', icon: '🩹',
+          cost: { pool: { '护甲衣物': 2, '工具零件': 1 } },
+          output: { name: '简易绷带', quality: '普通', weight: 0.2, category: '医疗药品', quantity: 3 },
+          building: null, skill: '医疗', baseRate: 0.85, tech: 'survival_basics' },
+        // 简易武器
+        { id: 'spiked_club', name: '尖刺木棍', cat: '武器弹药', icon: '🪵',
+          cost: { pool: { '建筑材料': 3, '工具零件': 1 } },
+          output: { name: '尖刺木棍', quality: '普通', weight: 1.5, category: '武器弹药', quantity: 1 },
+          building: null, skill: null, baseRate: 0.9, tech: 'improvised_weapons' },
+        { id: 'sling', name: '投石索', cat: '武器弹药', icon: '🪢',
+          cost: { pool: { '护甲衣物': 2, '建筑材料': 1 } },
+          output: { name: '投石索', quality: '普通', weight: 0.3, category: '武器弹药', quantity: 1 },
+          building: null, skill: null, baseRate: 0.92, tech: 'improvised_weapons' },
+        { id: 'wooden_shield', name: '简易木盾', cat: '护甲衣物', icon: '🪵',
+          cost: { pool: { '建筑材料': 5, '工具零件': 2 } },
+          output: { name: '简易木盾', quality: '普通', weight: 2.5, category: '护甲衣物', quantity: 1 },
+          building: null, skill: null, baseRate: 0.85, tech: 'improvised_weapons' },
+        // ═══ 阶段2 · 基础工坊 ═══
+        { id: 'repair_kit', name: '修理套件', cat: '工具零件', icon: '🔩',
+          cost: { pool: { '工具零件': 4, '建筑材料': 1 } },
+          output: { name: '修理套件', quality: '普通', weight: 0.5, category: '工具零件', quantity: 1 },
+          building: null, skill: '制造', baseRate: 0.9, tech: 'workshop_basics' },
+        { id: 'molotov', name: '燃烧瓶', cat: '武器弹药', icon: '🍾',
+          cost: { pool: { '燃料能源': 3, '其他杂物': 1 } },
+          output: { name: '燃烧瓶', quality: '普通', weight: 0.6, category: '武器弹药', quantity: 2 },
+          building: null, skill: null, baseRate: 0.8, tech: 'workshop_basics' },
+        { id: 'crowbar', name: '改装撬棍', cat: '工具零件', icon: '🪛',
+          cost: { pool: { '建筑材料': 3, '工具零件': 2 } },
+          output: { name: '改装撬棍', quality: '精良', weight: 1.2, category: '工具零件', quantity: 1 },
+          building: '工作台', skill: '制造', baseRate: 0.75, tech: 'workshop_basics' },
+        // 燃料精炼
+        { id: 'fuel_cell', name: '燃料罐', cat: '燃料能源', icon: '⛽',
+          cost: { pool: { '燃料能源': 4, '工具零件': 1 } },
+          output: { name: '燃料罐', quality: '普通', weight: 2.0, category: '燃料能源', quantity: 1 },
+          building: null, skill: null, baseRate: 0.85, tech: 'fuel_tech' },
+        { id: 'biodiesel', name: '生物柴油', cat: '燃料能源', icon: '🛢️',
+          cost: { pool: { '食物与水': 4, '燃料能源': 2 } },
+          output: { name: '生物柴油', quality: '普通', weight: 3.0, category: '燃料能源', quantity: 2 },
+          building: null, skill: null, baseRate: 0.78, tech: 'fuel_tech' },
+        // 战地医疗
+        { id: 'antiseptic', name: '消炎药', cat: '医疗药品', icon: '💊',
+          cost: { pool: { '医疗药品': 4, '食物与水': 1 } },
+          output: { name: '消炎药', quality: '普通', weight: 0.1, category: '医疗药品', quantity: 2 },
+          building: '医疗站', skill: '医疗', baseRate: 0.7, tech: 'field_medicine' },
+        { id: 'splint', name: '夹板', cat: '医疗药品', icon: '🩻',
+          cost: { pool: { '建筑材料': 3, '护甲衣物': 2 } },
+          output: { name: '夹板', quality: '普通', weight: 0.4, category: '医疗药品', quantity: 1 },
+          building: '医疗站', skill: '医疗', baseRate: 0.85, tech: 'field_medicine' },
+        { id: 'painkiller', name: '止痛片', cat: '医疗药品', icon: '💊',
+          cost: { pool: { '医疗药品': 2, '食物与水': 1 } },
+          output: { name: '止痛片', quality: '普通', weight: 0.05, category: '医疗药品', quantity: 4 },
+          building: '医疗站', skill: '医疗', baseRate: 0.8, tech: 'field_medicine' },
+        // 基础护甲
+        { id: 'reinforced_cloth', name: '强化布甲', cat: '护甲衣物', icon: '👘',
+          cost: { pool: { '护甲衣物': 4, '工具零件': 2 } },
+          output: { name: '强化布甲', quality: '普通', weight: 2.0, category: '护甲衣物', quantity: 1 },
+          building: null, skill: null, baseRate: 0.88, tech: 'basic_armor' },
+        { id: 'light_steel_shield', name: '轻钢盾', cat: '护甲衣物', icon: '🛡️',
+          cost: { pool: { '建筑材料': 6, '工具零件': 4 } },
+          output: { name: '轻钢盾', quality: '精良', weight: 3.0, category: '护甲衣物', quantity: 1 },
+          building: '工作台', skill: '制造', baseRate: 0.72, tech: 'basic_armor' },
+        { id: 'knee_pads', name: '护膝', cat: '护甲衣物', icon: '🦵',
+          cost: { pool: { '护甲衣物': 2, '工具零件': 1 } },
+          output: { name: '护膝', quality: '普通', weight: 0.6, category: '护甲衣物', quantity: 2 },
+          building: null, skill: null, baseRate: 0.9, tech: 'basic_armor' },
+        // ═══ 阶段3 · 中级工业 ═══
+        // 金属冶炼
+        { id: 'steel_ingot', name: '钢锭', cat: '建筑材料', icon: '🪨',
+          cost: { pool: { '建筑材料': 8, '燃料能源': 5 } },
+          output: { name: '钢锭', quality: '普通', weight: 5.0, category: '建筑材料', quantity: 1 },
+          building: '熔炼炉', skill: '制造', baseRate: 0.8, tech: 'metal_smelting' },
+        { id: 'iron_plate', name: '铁板', cat: '建筑材料', icon: '🔲',
+          cost: { pool: { '建筑材料': 6, '燃料能源': 3 } },
+          output: { name: '铁板', quality: '普通', weight: 3.5, category: '建筑材料', quantity: 2 },
+          building: '熔炼炉', skill: '制造', baseRate: 0.85, tech: 'metal_smelting' },
+        { id: 'reinforced_rebar', name: '强化钢筋', cat: '建筑材料', icon: '📐',
+          cost: { pool: { '建筑材料': 10, '燃料能源': 6, '工具零件': 3 } },
+          output: { name: '强化钢筋', quality: '精良', weight: 8.0, category: '建筑材料', quantity: 1 },
+          building: '熔炼炉', skill: '制造', baseRate: 0.7, tech: 'metal_smelting' },
+        // 火药工艺
+        // 药物合成
+        // 食品工程
+        { id: 'military_ration', name: '军用罐头', cat: '食物与水', icon: '🥫',
+          cost: { pool: { '食物与水': 6, '燃料能源': 2 } },
+          output: { name: '军用罐头', quality: '精良', weight: 0.5, category: '食物与水', quantity: 3 },
+          building: null, skill: null, baseRate: 0.85, tech: 'food_engineering' },
+        { id: 'nutrient_paste', name: '营养膏', cat: '食物与水', icon: '🍯',
+          cost: { pool: { '食物与水': 4, '医疗药品': 2 } },
+          output: { name: '营养膏', quality: '稀有', weight: 1.0, category: '食物与水', quantity: 2 },
+          building: null, skill: '医疗', baseRate: 0.75, tech: 'food_engineering' },
+        { id: 'longterm_ration', name: '长效口粮', cat: '食物与水', icon: '📦',
+          cost: { pool: { '食物与水': 10, '燃料能源': 3, '工具零件': 1 } },
+          output: { name: '长效口粮', quality: '史诗', weight: 1.5, category: '食物与水', quantity: 5 },
+          building: null, skill: null, baseRate: 0.65, tech: 'food_engineering' },
+        // 结构加固
+        { id: 'steel_barricade', name: '钢制路障', cat: '建筑材料', icon: '🚧',
+          cost: { pool: { '建筑材料': 12, '工具零件': 6 } },
+          output: { name: '钢制路障', quality: '精良', weight: 20.0, category: '建筑材料', quantity: 1 },
+          building: '熔炼炉', skill: '制造', baseRate: 0.75, tech: 'structure_reinforce' },
+        { id: 'spike_trap', name: '尖刺陷阱', cat: '建筑材料', icon: '⚠️',
+          cost: { pool: { '建筑材料': 8, '工具零件': 4 } },
+          output: { name: '尖刺陷阱', quality: '普通', weight: 5.0, category: '建筑材料', quantity: 2 },
+          building: null, skill: null, baseRate: 0.82, tech: 'structure_reinforce' },
+        { id: 'reinforced_wall', name: '加固墙板', cat: '建筑材料', icon: '🧱',
+          cost: { pool: { '建筑材料': 15, '工具零件': 8, '燃料能源': 4 } },
+          output: { name: '加固墙板', quality: '精良', weight: 25.0, category: '建筑材料', quantity: 1 },
+          building: '熔炼炉', skill: '制造', baseRate: 0.7, tech: 'structure_reinforce' },
+        // ═══ 阶段4 · 高级制造 ═══
+        // 电子技术
+        { id: 'radio_transceiver', name: '无线电收发器', cat: '工具零件', icon: '📻',
+          cost: { pool: { '工具零件': 12, '燃料能源': 5 } },
+          output: { name: '无线电收发器', quality: '精良', weight: 1.5, category: '工具零件', quantity: 1 },
+          building: '电子台', skill: null, baseRate: 0.7, tech: 'electronics' },
+        { id: 'battery_pack', name: '蓄电池组', cat: '燃料能源', icon: '🔋',
+          cost: { pool: { '工具零件': 8, '燃料能源': 6 } },
+          output: { name: '蓄电池组', quality: '普通', weight: 3.0, category: '燃料能源', quantity: 1 },
+          building: '电子台', skill: null, baseRate: 0.8, tech: 'electronics' },
+        { id: 'solar_panel', name: '太阳能板', cat: '建筑材料', icon: '☀️',
+          cost: { pool: { '工具零件': 15, '建筑材料': 10, '燃料能源': 5 } },
+          output: { name: '太阳能板', quality: '稀有', weight: 5.0, category: '建筑材料', quantity: 1 },
+          building: '电子台', skill: null, baseRate: 0.6, tech: 'electronics' },
+        { id: 'shock_trap', name: '电击陷阱', cat: '建筑材料', icon: '⚡',
+          cost: { pool: { '工具零件': 10, '燃料能源': 8, '建筑材料': 5 } },
+          output: { name: '电击陷阱', quality: '精良', weight: 3.0, category: '建筑材料', quantity: 1 },
+          building: '电子台', skill: null, baseRate: 0.72, tech: 'electronics' },
+        // 精密机械
+        // 高级医疗
+        // 载具改装
+        // 初级自动化
+        { id: 'alarm_system', name: '警报系统', cat: '建筑材料', icon: '🚨',
+          cost: { pool: { '工具零件': 12, '建筑材料': 8, '燃料能源': 5 } },
+          output: { name: '警报系统', quality: '精良', weight: 2.0, category: '建筑材料', quantity: 1 },
+          building: '电子台', skill: null, baseRate: 0.72, tech: 'basic_automation' },
+        { id: 'water_pump', name: '水泵', cat: '建筑材料', icon: '💧',
+          cost: { pool: { '工具零件': 10, '建筑材料': 12, '燃料能源': 6 } },
+          output: { name: '水泵', quality: '精良', weight: 6.0, category: '建筑材料', quantity: 1 },
+          building: '电子台', skill: null, baseRate: 0.7, tech: 'basic_automation' },
+        // ═══ 阶段5 · 尖端科技 ═══
+        // 再生能源
+        { id: 'solar_array', name: '太阳能阵列', cat: '建筑材料', icon: '☀️',
+          cost: { pool: { '建筑材料': 25, '工具零件': 20, '燃料能源': 15 } },
+          output: { name: '太阳能阵列', quality: '史诗', weight: 15.0, category: '建筑材料', quantity: 1 },
+          building: '实验室', skill: null, baseRate: 0.45, tech: 'renewable_energy' },
+        { id: 'wind_turbine', name: '风力涡轮', cat: '建筑材料', icon: '💨',
+          cost: { pool: { '建筑材料': 20, '工具零件': 18, '燃料能源': 10 } },
+          output: { name: '风力涡轮', quality: '史诗', weight: 12.0, category: '建筑材料', quantity: 1 },
+          building: '实验室', skill: null, baseRate: 0.5, tech: 'renewable_energy' },
+        { id: 'geothermal_pump', name: '地热泵', cat: '建筑材料', icon: '🌡️',
+          cost: { pool: { '建筑材料': 30, '工具零件': 25, '燃料能源': 20 } },
+          output: { name: '地热泵', quality: '传说', weight: 20.0, category: '建筑材料', quantity: 1 },
+          building: '实验室', skill: null, baseRate: 0.4, tech: 'renewable_energy' },
+        // 尖端武器
+        // 生物科技
+        // 量子通讯
+        // 战术AI
+    ];
+
+    // ===== 性能优化：从 renderUI 内部提升到模块顶层 =====
+    // 以下常量和纯工具函数不依赖 statData，提升后只创建一次，避免每次渲染重建。
+
+    // 资源拆解常量
+    const QUALITY_COEFF = { '传说': 6.0, '史诗': 4.0, '稀有': 2.5, '精良': 1.5, '普通': 1.0 };
+    const DISMANTLABLE_CATS = ['食物与水', '医疗药品', '建筑材料', '武器弹药', '燃料能源', '工具零件', '护甲衣物'];
+    // 建筑类型→消耗资源池映射
+    const BUILDING_TYPE_TO_RESOURCE = {
+        '居住': ['建筑材料'],
+        '防御': ['建筑材料', '武器弹药'],
+        '仓储': ['建筑材料'],
+        '生产': ['建筑材料', '工具零件'],
+        '训练': ['工具零件', '武器弹药'],
+        '研究': ['工具零件', '燃料能源', '医疗药品'],
+        '医疗': ['建筑材料', '医疗药品'],
+        '其他': ['建筑材料']
+    };
+
+    // 类别筛选标签（背包 / 仓储共用）
+    const CATEGORY_INFO = [
+        { key: '食物与水', icon: '🍖' },
+        { key: '医疗药品', icon: '💊' },
+        { key: '建筑材料', icon: '🧱' },
+        { key: '武器弹药', icon: '🔫' },
+        { key: '燃料能源', icon: '⛽' },
+        { key: '工具零件', icon: '🔧' },
+        { key: '护甲衣物', icon: '🛡️' },
+        { key: '其他杂物', icon: '📦' },
+    ];
+
+    // 品质系数查找
+    function getQualityCoefficient(qualityOrDetail) {
+        for (const [q, coeff] of Object.entries(QUALITY_COEFF)) {
+            if ((qualityOrDetail || '').includes(q)) return coeff;
+        }
+        return 1.0;
+    }
+
+    function calculateDismantleValue(itemData) {
+        if (!itemData || typeof itemData !== 'object') return 0;
+        const weight = parseFloat(itemData.weight) || 0;
+        const cat = (itemData.category || '其他杂物').toString().trim();
+        if (!DISMANTLABLE_CATS.includes(cat)) return 0;
+        const qualityStr = itemData.quality || itemData.detail || '';
+        const qualityCoeff = getQualityCoefficient(qualityStr);
+        return Math.round(weight * qualityCoeff);
+    }
+
+    /* ===== 共享工具函数（建筑仓储+背包共用） ===== */
+    function extractEmoji(detail) {
+        const m = (detail || '').match(/^(\p{Emoji_Presentation}|\p{Extended_Pictographic})/u);
+        return m ? m[1] : '📦';
+    }
+    function stripEmoji(detail) {
+        return (detail || '').replace(/^(\p{Emoji_Presentation}|\p{Extended_Pictographic})\s*/u, '');
+    }
+    function getRarity(qualityOrDetail) {
+        const d = (qualityOrDetail || '').toLowerCase();
+        if (d === '传说' || d.includes('legendary')) return 'legendary';
+        if (d === '史诗' || d.includes('epic')) return 'epic';
+        if (d === '稀有' || d.includes('rare')) return 'rare';
+        if (d === '精良' || d.includes('优秀') || d.includes('uncommon')) return 'uncommon';
+        return 'common';
+    }
+    function getItemRarity(itemData) {
+        if (!itemData) return 'common';
+        if (itemData.quality) return getRarity(itemData.quality);
+        return getRarity(itemData.detail || '');
+    }
+    function getItemEmoji(itemData) {
+        if (itemData && itemData.emoji) return itemData.emoji;
+        return extractEmoji(itemData && itemData.detail || '');
+    }
+    function getItemDesc(itemData) {
+        if (!itemData) return '';
+        if (itemData.quality !== undefined || itemData.emoji !== undefined) {
+            return itemData.detail || '';
+        }
+        return cleanDetail(itemData.detail || '');
+    }
+    const rarityLabels = {
+        common: 'COMMON', uncommon: 'UNCOMMON', rare: 'RARE', epic: 'EPIC', legendary: 'LEGEND'
+    };
+    function cleanDetail(detail) {
+        return stripEmoji(detail)
+            .replace(/[×xX]\s*\d+/, '')
+            .replace(/\d+\s*[个只把件瓶盒套支条份]/, '')
+            .replace(/数量[:：]\s*\d+/, '')
+            .replace(/^[,，、\s]+/, '')
+            .trim();
+    }
+
+    function makeCategoryFilterHtml() {
+        const allChip = `<button class="cat-chip active" data-cat="*">📋 全部</button>`;
+        const chips = CATEGORY_INFO.map(c =>
+            `<button class="cat-chip" data-cat="${c.key}">${c.icon} ${c.key}</button>`
+        ).join('');
+        return `<div class="cat-filter">${allChip}${chips}</div>`;
+    }
+
+    function bindCategoryFilter(containerEl, gridSelector) {
+        const grids = typeof gridSelector === 'string'
+            ? containerEl.querySelectorAll(gridSelector)
+            : [gridSelector];
+        containerEl.querySelectorAll('.cat-chip').forEach(chip => {
+            chip.addEventListener('click', () => {
+                const cat = chip.dataset.cat;
+                chip.parentElement.querySelectorAll('.cat-chip').forEach(c => c.classList.remove('active'));
+                chip.classList.add('active');
+                grids.forEach(grid => {
+                    grid.querySelectorAll('.bag-item').forEach(item => {
+                        item.style.display = (cat === '*' || item.dataset.category === cat) ? '' : 'none';
+                    });
+                });
+            });
+        });
+    }
+
+    // ===== 迷你SPECIAL渲染辅助 =====
+    function renderMiniSpecial(sp) {
+        if (!sp || typeof sp !== 'object') return '';
+        const keys = ['S','P','E','C','I','A','L'];
+        return `<div class="special-mini">${keys.map(k => {
+            const v = Math.min(10, Math.max(-10, parseInt(sp[k]) || 0));
+            const cls = v > 0 ? 'boosted' : v < 0 ? 'reduced' : 'neutral';
+            const sign = v > 0 ? '+' : '';
+            return `<span class="special-mini-cell ${cls}">${k}${sign}${v}</span>`;
+        }).join('')}</div>`;
+    }
+
     function renderUI(statData) {
+        _lastStatData = statData;  // ★ 懒渲染：存档最新数据供 Tab 切换时补渲染
         const get = (path, fallback) => _.get(statData, path, fallback ?? '');
 
         /* 安全渲染：任一模块出错不影响其他模块 */
         const safe = (label, fn) => { try { fn(); } catch(e) { console.error('[状态栏] 渲染失败:', label, e); } };
 
-        // ===== 资源拆解常量（必须在所有 safe() 块之前定义，避免 TDZ） =====
-        const QUALITY_COEFF = { '传说': 6.0, '史诗': 4.0, '稀有': 2.5, '精良': 1.5, '普通': 1.0 };
-        const DISMANTLABLE_CATS = ['食物与水', '医疗药品', '建筑材料', '武器弹药', '燃料能源', '工具零件', '护甲衣物'];
-        // 建筑类型→消耗资源池映射（建材+工具为基础，随等级搭配其他池）
-        const BUILDING_TYPE_TO_RESOURCE = {
-            '居住': ['建筑材料'],
-            '防御': ['建筑材料', '武器弹药'],
-            '仓储': ['建筑材料'],
-            '生产': ['建筑材料', '工具零件'],
-            '训练': ['工具零件', '武器弹药'],
-            '研究': ['工具零件', '燃料能源', '医疗药品'],
-            '医疗': ['建筑材料', '医疗药品'],
-            '其他': ['建筑材料']
-        };
-
-        function getQualityCoefficient(qualityOrDetail) {
-            for (const [q, coeff] of Object.entries(QUALITY_COEFF)) {
-                if ((qualityOrDetail || '').includes(q)) return coeff;
-            }
-            return 1.0;
-        }
-
-        function calculateDismantleValue(itemData) {
-            if (!itemData || typeof itemData !== 'object') return 0;
-            const weight = parseFloat(itemData.weight) || 0;
-            const cat = (itemData.category || '其他杂物').toString().trim();
-            if (!DISMANTLABLE_CATS.includes(cat)) return 0;
-            // 优先读新字段 quality，兼容旧 detail
-            const qualityStr = itemData.quality || itemData.detail || '';
-            const qualityCoeff = getQualityCoefficient(qualityStr);
-            return Math.round(weight * qualityCoeff);
-        }
-
-        /* ===== 共享工具函数（建筑仓储+背包共用） ===== */
-        function extractEmoji(detail) {
-            const m = (detail || '').match(/^(\p{Emoji_Presentation}|\p{Extended_Pictographic})/u);
-            return m ? m[1] : '📦';
-        }
-        function stripEmoji(detail) {
-            return (detail || '').replace(/^(\p{Emoji_Presentation}|\p{Extended_Pictographic})\s*/u, '');
-        }
-        function getRarity(qualityOrDetail) {
-            // 优先直接匹配品质枚举值（新字段），兼容旧 detail 字符串
-            const d = (qualityOrDetail || '').toLowerCase();
-            if (d === '传说' || d.includes('legendary')) return 'legendary';
-            if (d === '史诗' || d.includes('epic')) return 'epic';
-            if (d === '稀有' || d.includes('rare')) return 'rare';
-            if (d === '精良' || d.includes('优秀') || d.includes('uncommon')) return 'uncommon';
-            return 'common';
-        }
-        // 从 itemData 对象直接读取品质（优先新字段 quality，兼容旧 detail）
-        function getItemRarity(itemData) {
-            if (!itemData) return 'common';
-            if (itemData.quality) return getRarity(itemData.quality);
-            return getRarity(itemData.detail || '');
-        }
-        // 从 itemData 对象直接读取 emoji（优先新字段 emoji，兼容旧 detail 解析）
-        function getItemEmoji(itemData) {
-            if (itemData && itemData.emoji) return itemData.emoji;
-            return extractEmoji(itemData && itemData.detail || '');
-        }
-        // 从 itemData 对象直接读取描述文字（新字段 detail 已是干净描述，无需清理）
-        function getItemDesc(itemData) {
-            if (!itemData) return '';
-            // 新格式：detail 是纯描述文字，直接返回
-            // 旧格式兼容：detail 混有 emoji/品质词，走 cleanDetail 清理
-            if (itemData.quality !== undefined || itemData.emoji !== undefined) {
-                return itemData.detail || '';
-            }
-            return cleanDetail(itemData.detail || '');
-        }
-        const rarityLabels = {
-            common: 'COMMON', uncommon: 'UNCOMMON', rare: 'RARE', epic: 'EPIC', legendary: 'LEGEND'
-        };
-        function cleanDetail(detail) {
-            return stripEmoji(detail)
-                .replace(/[×xX]\s*\d+/, '')
-                .replace(/\d+\s*[个只把件瓶盒套支条份]/, '')
-                .replace(/数量[:：]\s*\d+/, '')
-                .replace(/^[,，、\s]+/, '')
-                .trim();
-        }
 
         // ===== 统一转移选择弹窗 =====
         function showTransferPicker(fromType, itemName, fromBuilding, liElement) {
@@ -8075,59 +8305,9 @@
             }
         } catch(e) {}
 
-        // ===== 类别筛选标签 =====
-        const CATEGORY_INFO = [
-            { key: '食物与水', icon: '🍖' },
-            { key: '医疗药品', icon: '💊' },
-            { key: '建筑材料', icon: '🧱' },
-            { key: '武器弹药', icon: '🔫' },
-            { key: '燃料能源', icon: '⛽' },
-            { key: '工具零件', icon: '🔧' },
-            { key: '护甲衣物', icon: '🛡️' },
-            { key: '其他杂物', icon: '📦' },
-        ];
-
-        function makeCategoryFilterHtml() {
-            const allChip = `<button class="cat-chip active" data-cat="*">📋 全部</button>`;
-            const chips = CATEGORY_INFO.map(c =>
-                `<button class="cat-chip" data-cat="${c.key}">${c.icon} ${c.key}</button>`
-            ).join('');
-            return `<div class="cat-filter">${allChip}${chips}</div>`;
-        }
-
-        function bindCategoryFilter(containerEl, gridSelector) {
-            const grids = typeof gridSelector === 'string'
-                ? containerEl.querySelectorAll(gridSelector)
-                : [gridSelector];
-            containerEl.querySelectorAll('.cat-chip').forEach(chip => {
-                chip.addEventListener('click', () => {
-                    const cat = chip.dataset.cat;
-                    chip.parentElement.querySelectorAll('.cat-chip').forEach(c => c.classList.remove('active'));
-                    chip.classList.add('active');
-                    grids.forEach(grid => {
-                        grid.querySelectorAll('.bag-item').forEach(item => {
-                            item.style.display = (cat === '*' || item.dataset.category === cat) ? '' : 'none';
-                        });
-                    });
-                });
-            });
-        }
-
-        // ===== 迷你SPECIAL渲染辅助 =====
-        function renderMiniSpecial(sp) {
-            if (!sp || typeof sp !== 'object') return '';
-            const keys = ['S','P','E','C','I','A','L'];
-            const names = { S:'力',P:'感',E:'耐',C:'魅',I:'智',A:'敏',L:'志' };
-            return `<div class="special-mini">${keys.map(k => {
-                const v = Math.min(10, Math.max(-10, parseInt(sp[k]) || 0));
-                const cls = v > 0 ? 'boosted' : v < 0 ? 'reduced' : 'neutral';
-                const sign = v > 0 ? '+' : '';
-                return `<span class="special-mini-cell ${cls}">${k}${sign}${v}</span>`;
-            }).join('')}</div>`;
-        }
-
         // ===== 1. 个人状态 =====
         safe('个人状态', () => {
+        if (_activeTab !== 'basic') { _dirtyTabs.add('basic'); return; } // ★ 懒渲染
         // ===== 1. 个人状态 - 属性卡片 =====
         const stats = [
             { label: '❤️ HP / 生命值', key: '核心状态.hp_current', maxKey: '核心状态.hp_max', cls: 'red', warnLow: true },
@@ -8440,6 +8620,7 @@
 
         // ===== 1.5 装备系统 =====
         safe('装备系统', () => {
+        if (_activeTab !== 'equip') { _dirtyTabs.add('equip'); return; } // ★ 懒渲染
         const equipped = get('装备', {});
         const specialA  = parseInt(get('SPECIAL.A', 0)) || 0;
 
@@ -8567,6 +8748,7 @@
 
         // ===== 2. 环境信息 =====
         safe('环境信息', () => {
+        if (_activeTab !== 'env') { _dirtyTabs.add('env'); return; } // ★ 懒渲染
         const envCard = document.getElementById('envCard');
         const radiationVal = get('环境.radiation', 0);
         const tempVal = get('环境.temperature', '未知');
@@ -8641,6 +8823,7 @@
 
         // ===== 2.2 本地战术地图 =====
         safe('本地战术地图', () => {
+            if (_activeTab !== 'localmap') { _dirtyTabs.add('localmap'); return; } // ★ 懒渲染
             const container = document.getElementById('localMapContainer');
             if (!container) return;
 
@@ -8952,6 +9135,7 @@
 
         // ===== 2.5 建筑系统 =====
         safe('建筑系统', () => {
+        if (_activeTab !== 'env') return; // ★ 懒渲染（env 已在 环境信息 块标脏）
         const buildingCard = document.getElementById('buildingCard');
         const buildings = get('建筑', {});
         const buildingEntries = Object.entries(buildings);
@@ -9264,6 +9448,7 @@
 
         // ===== 3. 背包物品 =====
         safe('背包物品', () => {
+        if (_activeTab !== 'bag') { _dirtyTabs.add('bag'); return; } // ★ 懒渲染
         const inventory = get('物品', {});
         const bagList = document.getElementById('bagList');
         const invEntries = Object.entries(inventory);
@@ -9385,6 +9570,7 @@
 
         // ===== 4. 载具栏 =====
         safe('载具栏', () => {
+        if (_activeTab !== 'vehicle') { _dirtyTabs.add('vehicle'); return; } // ★ 懒渲染
         const vehicles = get('载具', {});
         const vehicleList = document.getElementById('vehicleList');
         const vehEntries = Object.entries(vehicles);
@@ -9574,6 +9760,7 @@
 
         // ===== 4.4 资源总览（独立渲染，不依赖营地是否存在） =====
         safe('资源总览', () => {
+            if (_activeTab !== 'camp') { _dirtyTabs.add('camp'); return; } // ★ 懒渲染
             const res = computeResources();
             const resEl = document.getElementById('resourceOverview');
             const totalRes = Object.values(res.totals).reduce((a, b) => a + b, 0);
@@ -9625,6 +9812,7 @@
 
         // ===== 4.5 营地 =====
         safe('营地', () => {
+        if (_activeTab !== 'camp') return; // ★ 懒渲染（camp 已在 资源总览 块标脏）
         const campData = get('营地', {});
         const campName = (campData.名称 || '').toString().trim();
         const isWandering = !campName || campName === '流浪';
@@ -10685,6 +10873,7 @@
 
         // ===== 5. 队友 =====
         safe('队友', () => {
+        if (_activeTab !== 'partner') { _dirtyTabs.add('partner'); return; } // ★ 懒渲染
         const partners = get('队友', {});
         const partnerList = document.getElementById('partnerList');
 
@@ -10792,6 +10981,7 @@
 
         // ===== 6. NPC =====
         safe('NPC', () => {
+        if (_activeTab !== 'npc') { _dirtyTabs.add('npc'); return; } // ★ 懒渲染
         const npcs = get('NPC', {});
         const npcList = document.getElementById('npcList');
         const npcEntries = Object.entries(npcs);
@@ -10861,6 +11051,7 @@
 
         // ===== 7. 世界地图 + 事件 =====
         safe('世界地图', () => {
+        if (_activeTab !== 'world') { _dirtyTabs.add('world'); return; } // ★ 懒渲染
         const mapSection = document.getElementById('mapSection');
         const continentData = {
             asia:     { icon: '⛩️', name: '亚洲 / ASIA',       cls: 'asia' },
@@ -10990,6 +11181,7 @@
 
         // ===== 8. 通讯系统 =====
         safe('通讯系统', () => {
+        if (_activeTab !== 'msg') { _dirtyTabs.add('msg'); return; } // ★ 懒渲染
         const msgGrid = document.getElementById('msgGrid');
         const publicMessages = get('公共通讯', {});
         const privateMessages = get('私人通讯', {});
@@ -11070,175 +11262,11 @@
         }); /* end safe 通讯系统 */
 
         safe('制造系统', () => {
+            if (_activeTab !== 'craft') { _dirtyTabs.add('craft'); return; } // ★ 懒渲染
             // ===== 科技树数据 =====
             // TECH_TREE 已提升至模块顶层（见 renderUI 定义之前），避免每次渲染重新创建这份 220+ 行的静态科技树数据。
 
-            const CRAFT_RECIPES = [
-                // ═══ 阶段1 · 基础生存 ═══
-                { id: 'purified_water', name: '净化水', cat: '食物与水', icon: '💧',
-                  cost: { pool: { '食物与水': 3, '燃料能源': 1 } },
-                  output: { name: '净化水', quality: '普通', weight: 0.5, category: '食物与水', quantity: 3 },
-                  building: null, skill: null, baseRate: 0.9, tech: 'survival_basics' },
-                { id: 'dried_food', name: '压缩干粮', cat: '食物与水', icon: '🥫',
-                  cost: { pool: { '食物与水': 5 } },
-                  output: { name: '压缩干粮', quality: '普通', weight: 0.8, category: '食物与水', quantity: 2 },
-                  building: null, skill: null, baseRate: 0.85, tech: 'survival_basics' },
-                { id: 'bandage', name: '简易绷带', cat: '医疗药品', icon: '🩹',
-                  cost: { pool: { '护甲衣物': 2, '工具零件': 1 } },
-                  output: { name: '简易绷带', quality: '普通', weight: 0.2, category: '医疗药品', quantity: 3 },
-                  building: null, skill: '医疗', baseRate: 0.85, tech: 'survival_basics' },
-                // 简易武器
-                { id: 'spiked_club', name: '尖刺木棍', cat: '武器弹药', icon: '🪵',
-                  cost: { pool: { '建筑材料': 3, '工具零件': 1 } },
-                  output: { name: '尖刺木棍', quality: '普通', weight: 1.5, category: '武器弹药', quantity: 1 },
-                  building: null, skill: null, baseRate: 0.9, tech: 'improvised_weapons' },
-                { id: 'sling', name: '投石索', cat: '武器弹药', icon: '🪢',
-                  cost: { pool: { '护甲衣物': 2, '建筑材料': 1 } },
-                  output: { name: '投石索', quality: '普通', weight: 0.3, category: '武器弹药', quantity: 1 },
-                  building: null, skill: null, baseRate: 0.92, tech: 'improvised_weapons' },
-                { id: 'wooden_shield', name: '简易木盾', cat: '护甲衣物', icon: '🪵',
-                  cost: { pool: { '建筑材料': 5, '工具零件': 2 } },
-                  output: { name: '简易木盾', quality: '普通', weight: 2.5, category: '护甲衣物', quantity: 1 },
-                  building: null, skill: null, baseRate: 0.85, tech: 'improvised_weapons' },
-                // ═══ 阶段2 · 基础工坊 ═══
-                { id: 'repair_kit', name: '修理套件', cat: '工具零件', icon: '🔩',
-                  cost: { pool: { '工具零件': 4, '建筑材料': 1 } },
-                  output: { name: '修理套件', quality: '普通', weight: 0.5, category: '工具零件', quantity: 1 },
-                  building: null, skill: '制造', baseRate: 0.9, tech: 'workshop_basics' },
-                { id: 'molotov', name: '燃烧瓶', cat: '武器弹药', icon: '🍾',
-                  cost: { pool: { '燃料能源': 3, '其他杂物': 1 } },
-                  output: { name: '燃烧瓶', quality: '普通', weight: 0.6, category: '武器弹药', quantity: 2 },
-                  building: null, skill: null, baseRate: 0.8, tech: 'workshop_basics' },
-                { id: 'crowbar', name: '改装撬棍', cat: '工具零件', icon: '🪛',
-                  cost: { pool: { '建筑材料': 3, '工具零件': 2 } },
-                  output: { name: '改装撬棍', quality: '精良', weight: 1.2, category: '工具零件', quantity: 1 },
-                  building: '工作台', skill: '制造', baseRate: 0.75, tech: 'workshop_basics' },
-                // 燃料精炼
-                { id: 'fuel_cell', name: '燃料罐', cat: '燃料能源', icon: '⛽',
-                  cost: { pool: { '燃料能源': 4, '工具零件': 1 } },
-                  output: { name: '燃料罐', quality: '普通', weight: 2.0, category: '燃料能源', quantity: 1 },
-                  building: null, skill: null, baseRate: 0.85, tech: 'fuel_tech' },
-                { id: 'biodiesel', name: '生物柴油', cat: '燃料能源', icon: '🛢️',
-                  cost: { pool: { '食物与水': 4, '燃料能源': 2 } },
-                  output: { name: '生物柴油', quality: '普通', weight: 3.0, category: '燃料能源', quantity: 2 },
-                  building: null, skill: null, baseRate: 0.78, tech: 'fuel_tech' },
-                // 战地医疗
-                { id: 'antiseptic', name: '消炎药', cat: '医疗药品', icon: '💊',
-                  cost: { pool: { '医疗药品': 4, '食物与水': 1 } },
-                  output: { name: '消炎药', quality: '普通', weight: 0.1, category: '医疗药品', quantity: 2 },
-                  building: '医疗站', skill: '医疗', baseRate: 0.7, tech: 'field_medicine' },
-                { id: 'splint', name: '夹板', cat: '医疗药品', icon: '🩻',
-                  cost: { pool: { '建筑材料': 3, '护甲衣物': 2 } },
-                  output: { name: '夹板', quality: '普通', weight: 0.4, category: '医疗药品', quantity: 1 },
-                  building: '医疗站', skill: '医疗', baseRate: 0.85, tech: 'field_medicine' },
-                { id: 'painkiller', name: '止痛片', cat: '医疗药品', icon: '💊',
-                  cost: { pool: { '医疗药品': 2, '食物与水': 1 } },
-                  output: { name: '止痛片', quality: '普通', weight: 0.05, category: '医疗药品', quantity: 4 },
-                  building: '医疗站', skill: '医疗', baseRate: 0.8, tech: 'field_medicine' },
-                // 基础护甲
-                { id: 'reinforced_cloth', name: '强化布甲', cat: '护甲衣物', icon: '👘',
-                  cost: { pool: { '护甲衣物': 4, '工具零件': 2 } },
-                  output: { name: '强化布甲', quality: '普通', weight: 2.0, category: '护甲衣物', quantity: 1 },
-                  building: null, skill: null, baseRate: 0.88, tech: 'basic_armor' },
-                { id: 'light_steel_shield', name: '轻钢盾', cat: '护甲衣物', icon: '🛡️',
-                  cost: { pool: { '建筑材料': 6, '工具零件': 4 } },
-                  output: { name: '轻钢盾', quality: '精良', weight: 3.0, category: '护甲衣物', quantity: 1 },
-                  building: '工作台', skill: '制造', baseRate: 0.72, tech: 'basic_armor' },
-                { id: 'knee_pads', name: '护膝', cat: '护甲衣物', icon: '🦵',
-                  cost: { pool: { '护甲衣物': 2, '工具零件': 1 } },
-                  output: { name: '护膝', quality: '普通', weight: 0.6, category: '护甲衣物', quantity: 2 },
-                  building: null, skill: null, baseRate: 0.9, tech: 'basic_armor' },
-                // ═══ 阶段3 · 中级工业 ═══
-                // 金属冶炼
-                { id: 'steel_ingot', name: '钢锭', cat: '建筑材料', icon: '🪨',
-                  cost: { pool: { '建筑材料': 8, '燃料能源': 5 } },
-                  output: { name: '钢锭', quality: '普通', weight: 5.0, category: '建筑材料', quantity: 1 },
-                  building: '熔炼炉', skill: '制造', baseRate: 0.8, tech: 'metal_smelting' },
-                { id: 'iron_plate', name: '铁板', cat: '建筑材料', icon: '🔲',
-                  cost: { pool: { '建筑材料': 6, '燃料能源': 3 } },
-                  output: { name: '铁板', quality: '普通', weight: 3.5, category: '建筑材料', quantity: 2 },
-                  building: '熔炼炉', skill: '制造', baseRate: 0.85, tech: 'metal_smelting' },
-                { id: 'reinforced_rebar', name: '强化钢筋', cat: '建筑材料', icon: '📐',
-                  cost: { pool: { '建筑材料': 10, '燃料能源': 6, '工具零件': 3 } },
-                  output: { name: '强化钢筋', quality: '精良', weight: 8.0, category: '建筑材料', quantity: 1 },
-                  building: '熔炼炉', skill: '制造', baseRate: 0.7, tech: 'metal_smelting' },
-                // 火药工艺
-                // 药物合成
-                // 食品工程
-                { id: 'military_ration', name: '军用罐头', cat: '食物与水', icon: '🥫',
-                  cost: { pool: { '食物与水': 6, '燃料能源': 2 } },
-                  output: { name: '军用罐头', quality: '精良', weight: 0.5, category: '食物与水', quantity: 3 },
-                  building: null, skill: null, baseRate: 0.85, tech: 'food_engineering' },
-                { id: 'nutrient_paste', name: '营养膏', cat: '食物与水', icon: '🍯',
-                  cost: { pool: { '食物与水': 4, '医疗药品': 2 } },
-                  output: { name: '营养膏', quality: '稀有', weight: 1.0, category: '食物与水', quantity: 2 },
-                  building: null, skill: '医疗', baseRate: 0.75, tech: 'food_engineering' },
-                { id: 'longterm_ration', name: '长效口粮', cat: '食物与水', icon: '📦',
-                  cost: { pool: { '食物与水': 10, '燃料能源': 3, '工具零件': 1 } },
-                  output: { name: '长效口粮', quality: '史诗', weight: 1.5, category: '食物与水', quantity: 5 },
-                  building: null, skill: null, baseRate: 0.65, tech: 'food_engineering' },
-                // 结构加固
-                { id: 'steel_barricade', name: '钢制路障', cat: '建筑材料', icon: '🚧',
-                  cost: { pool: { '建筑材料': 12, '工具零件': 6 } },
-                  output: { name: '钢制路障', quality: '精良', weight: 20.0, category: '建筑材料', quantity: 1 },
-                  building: '熔炼炉', skill: '制造', baseRate: 0.75, tech: 'structure_reinforce' },
-                { id: 'spike_trap', name: '尖刺陷阱', cat: '建筑材料', icon: '⚠️',
-                  cost: { pool: { '建筑材料': 8, '工具零件': 4 } },
-                  output: { name: '尖刺陷阱', quality: '普通', weight: 5.0, category: '建筑材料', quantity: 2 },
-                  building: null, skill: null, baseRate: 0.82, tech: 'structure_reinforce' },
-                { id: 'reinforced_wall', name: '加固墙板', cat: '建筑材料', icon: '🧱',
-                  cost: { pool: { '建筑材料': 15, '工具零件': 8, '燃料能源': 4 } },
-                  output: { name: '加固墙板', quality: '精良', weight: 25.0, category: '建筑材料', quantity: 1 },
-                  building: '熔炼炉', skill: '制造', baseRate: 0.7, tech: 'structure_reinforce' },
-                // ═══ 阶段4 · 高级制造 ═══
-                // 电子技术
-                { id: 'radio_transceiver', name: '无线电收发器', cat: '工具零件', icon: '📻',
-                  cost: { pool: { '工具零件': 12, '燃料能源': 5 } },
-                  output: { name: '无线电收发器', quality: '精良', weight: 1.5, category: '工具零件', quantity: 1 },
-                  building: '电子台', skill: null, baseRate: 0.7, tech: 'electronics' },
-                { id: 'battery_pack', name: '蓄电池组', cat: '燃料能源', icon: '🔋',
-                  cost: { pool: { '工具零件': 8, '燃料能源': 6 } },
-                  output: { name: '蓄电池组', quality: '普通', weight: 3.0, category: '燃料能源', quantity: 1 },
-                  building: '电子台', skill: null, baseRate: 0.8, tech: 'electronics' },
-                { id: 'solar_panel', name: '太阳能板', cat: '建筑材料', icon: '☀️',
-                  cost: { pool: { '工具零件': 15, '建筑材料': 10, '燃料能源': 5 } },
-                  output: { name: '太阳能板', quality: '稀有', weight: 5.0, category: '建筑材料', quantity: 1 },
-                  building: '电子台', skill: null, baseRate: 0.6, tech: 'electronics' },
-                { id: 'shock_trap', name: '电击陷阱', cat: '建筑材料', icon: '⚡',
-                  cost: { pool: { '工具零件': 10, '燃料能源': 8, '建筑材料': 5 } },
-                  output: { name: '电击陷阱', quality: '精良', weight: 3.0, category: '建筑材料', quantity: 1 },
-                  building: '电子台', skill: null, baseRate: 0.72, tech: 'electronics' },
-                // 精密机械
-                // 高级医疗
-                // 载具改装
-                // 初级自动化
-                { id: 'alarm_system', name: '警报系统', cat: '建筑材料', icon: '🚨',
-                  cost: { pool: { '工具零件': 12, '建筑材料': 8, '燃料能源': 5 } },
-                  output: { name: '警报系统', quality: '精良', weight: 2.0, category: '建筑材料', quantity: 1 },
-                  building: '电子台', skill: null, baseRate: 0.72, tech: 'basic_automation' },
-                { id: 'water_pump', name: '水泵', cat: '建筑材料', icon: '💧',
-                  cost: { pool: { '工具零件': 10, '建筑材料': 12, '燃料能源': 6 } },
-                  output: { name: '水泵', quality: '精良', weight: 6.0, category: '建筑材料', quantity: 1 },
-                  building: '电子台', skill: null, baseRate: 0.7, tech: 'basic_automation' },
-                // ═══ 阶段5 · 尖端科技 ═══
-                // 再生能源
-                { id: 'solar_array', name: '太阳能阵列', cat: '建筑材料', icon: '☀️',
-                  cost: { pool: { '建筑材料': 25, '工具零件': 20, '燃料能源': 15 } },
-                  output: { name: '太阳能阵列', quality: '史诗', weight: 15.0, category: '建筑材料', quantity: 1 },
-                  building: '实验室', skill: null, baseRate: 0.45, tech: 'renewable_energy' },
-                { id: 'wind_turbine', name: '风力涡轮', cat: '建筑材料', icon: '💨',
-                  cost: { pool: { '建筑材料': 20, '工具零件': 18, '燃料能源': 10 } },
-                  output: { name: '风力涡轮', quality: '史诗', weight: 12.0, category: '建筑材料', quantity: 1 },
-                  building: '实验室', skill: null, baseRate: 0.5, tech: 'renewable_energy' },
-                { id: 'geothermal_pump', name: '地热泵', cat: '建筑材料', icon: '🌡️',
-                  cost: { pool: { '建筑材料': 30, '工具零件': 25, '燃料能源': 20 } },
-                  output: { name: '地热泵', quality: '传说', weight: 20.0, category: '建筑材料', quantity: 1 },
-                  building: '实验室', skill: null, baseRate: 0.4, tech: 'renewable_energy' },
-                // 尖端武器
-                // 生物科技
-                // 量子通讯
-                // 战术AI
-            ];
+            // CRAFT_RECIPES 已提升至模块顶层（见 renderUI 定义之前），避免每次渲染重新创建这份 ~170 行的配方数据。
 
             const resPools = get('营地.资源', {});
             const campBuildings = get('营地.建筑', {});
