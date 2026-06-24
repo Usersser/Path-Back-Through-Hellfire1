@@ -8783,7 +8783,7 @@
             </div>
             <div class="info-row">
                 <span class="info-key">🕐 时间 / 天气</span>
-                <span class="info-val">${get('环境.time_weather', '未知')}</span>
+                <span class="info-val">${(() => { const t = get('环境.时间', ''); const w = get('环境.天气', ''); if (t || w) return [t, w].filter(Boolean).join(' / '); return get('环境.time_weather', '未知'); })()}</span>
             </div>
             <div class="info-row">
                 <span class="info-key">🌡️ 体感温度</span>
@@ -13101,7 +13101,18 @@
             if (sd.物品[itemName]) {
                 sd.物品[itemName].quantity = (parseFloat(sd.物品[itemName].quantity) || 0) + 1;
             } else {
-                const backObj = { quantity: 1, emoji: item.emoji || '', quality: item.quality || item.detail || '', detail: (item.quality !== undefined ? item.detail : '') || '', weight: item.weight || 0, category: item.category || (item.weapon_type ? '武器弹药' : '护甲衣物') };
+                // ★ 修复：quality 与 detail 各自独立复制，不再互相替代。
+                //   旧逻辑: quality=item.quality||item.detail 把描述塞进 quality，
+                //           detail=(item.quality!==undefined?item.detail:'')||'' 在 quality 存在时取 detail，
+                //   但 equipItem 已将 detail 置空，导致此处取到 '' 并写回背包，描述永久消失。
+                const backObj = {
+                    quantity: 1,
+                    emoji:    item.emoji    || '',
+                    quality:  item.quality  || '',   // 仅已有 quality 时复制
+                    detail:   item.detail   || '',   // 始终保留描述（不再依赖 quality 是否存在）
+                    weight:   item.weight   || 0,
+                    category: item.category || (item.weapon_type ? '武器弹药' : '护甲衣物'),
+                };
                 ['weapon_type','ammo','range','armor_type','ac_bonus','armor_slot'].forEach(k => {
                     if (item[k] != null) backObj[k] = item[k];
                 });
@@ -13149,24 +13160,41 @@
                 if (sd.物品[oldName]) {
                     sd.物品[oldName].quantity = (parseFloat(sd.物品[oldName].quantity) || 0) + 1;
                 } else {
-                    sd.物品[oldName] = { quantity: 1, emoji: oldItem.emoji || '', quality: oldItem.quality || oldItem.detail || '', detail: (oldItem.quality !== undefined ? oldItem.detail : '') || '', weight: oldItem.weight || 0, category: oldItem.category || (oldItem.weapon_type ? '武器弹药' : '护甲衣物'), weapon_type: oldItem.weapon_type || undefined, ammo: oldItem.ammo || undefined, range: oldItem.range || undefined, armor_type: oldItem.armor_type || undefined, ac_bonus: oldItem.ac_bonus || undefined, armor_slot: oldItem.armor_slot || undefined };
+                    // ★ 修复：同 unequipItem，detail 直接复制，不再与 quality 混用
+                    sd.物品[oldName] = {
+                        quantity:    1,
+                        emoji:       oldItem.emoji       || '',
+                        quality:     oldItem.quality     || '',   // 仅已有 quality 时复制
+                        detail:      oldItem.detail      || '',   // 始终保留描述
+                        weight:      oldItem.weight      || 0,
+                        category:    oldItem.category    || (oldItem.weapon_type ? '武器弹药' : '护甲衣物'),
+                        weapon_type: oldItem.weapon_type || undefined,
+                        ammo:        oldItem.ammo        || undefined,
+                        range:       oldItem.range       || undefined,
+                        armor_type:  oldItem.armor_type  || undefined,
+                        ac_bonus:    oldItem.ac_bonus    || undefined,
+                        armor_slot:  oldItem.armor_slot  || undefined,
+                    };
                 }
             }
 
             // 写入槽位
+            // ★ 修复：quality 与 detail 各自独立复制，不再互相替代。
+            //   旧逻辑 quality=srcItem.quality||srcItem.detail 会把描述文本挤进 quality，
+            //   再把 detail 置空，导致卸下后描述永久消失。
             const newEquipObj = {
                 name:       itemName,
-                emoji:      srcItem.emoji      || '',
-                quality:    srcItem.quality    || srcItem.detail || '',
-                detail:     (srcItem.quality !== undefined ? srcItem.detail : '') || '',
-                weight:     srcItem.weight     || 0,
+                emoji:      srcItem.emoji       || '',
+                quality:    srcItem.quality     || '',   // 仅在来源有 quality 时复制，否则留空
+                detail:     srcItem.detail      || '',   // 始终保留 detail（品质/描述文本）
+                weight:     srcItem.weight      || 0,
                 weapon_type: srcItem.weapon_type || null,
-                ammo:       srcItem.ammo       || '',
-                range:      srcItem.range      || '',
-                armor_type: srcItem.armor_type || null,
+                ammo:       srcItem.ammo        || '',
+                range:      srcItem.range       || '',
+                armor_type: srcItem.armor_type  || null,
                 ac_bonus:   parseFloat(srcItem.ac_bonus) || 0,
-                armor_slot: srcItem.armor_slot || null,
-                category:   srcItem.category  || null,
+                armor_slot: srcItem.armor_slot  || null,
+                category:   srcItem.category   || null,
             };
             sd.装备[slotName] = newEquipObj;
 
